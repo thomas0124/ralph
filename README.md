@@ -230,11 +230,12 @@ The lead seat dispatches tasks to individual seats and coordinates their RESULT 
 
 ```sh
 # Spawn seats (--org-id, --id, --role, --driver, --model, --cwd are all required)
-ralph org spawn --org-id demo --id reviewer --role reviewer --driver claude --model sonnet --cwd .
-ralph org spawn --org-id demo --id verifier --role verifier --driver codex  --model gpt-5.5 --cwd .
+# Default permission mode is "autonomous", which requires --scope (or --allow-unscoped to bypass)
+ralph org spawn --org-id demo --id reviewer --role reviewer --driver claude --model sonnet --cwd . --scope "review code changes"
+ralph org spawn --org-id demo --id verifier --role verifier --driver codex  --model gpt-5.5 --cwd . --scope "verify test results"
 
-# opencode requires adding it to driver_pool / model_pool in ralph.toml first
-# ralph org spawn --org-id demo --id tester --role tester --driver opencode --model <model> --cwd . --allow-unscoped
+# opencode: add it to driver_pool / model_pool in ralph.toml first; supports autonomous or guarded only
+# ralph org spawn --org-id demo --id tester --role tester --driver opencode --model <model> --cwd . --scope "run tests"
 
 # Send a task (--to = target seat id, --text = message body)
 ralph org send --org-id demo --to reviewer --text "TYPE: TASK
