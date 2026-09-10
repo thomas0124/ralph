@@ -229,15 +229,26 @@ The lead seat dispatches tasks to individual seats and coordinates their RESULT 
 ### `ralph org`  Commands
 
 ```sh
-ralph org spawn --driver claude   --seat reviewer    # Start a Claude Code seat
-ralph org spawn --driver codex    --seat verifier    # Start a Codex seat
-ralph org spawn --driver opencode --seat tester      # Start an OpenCode seat (opt-in)
-ralph org send  --seat reviewer "TYPE: TASK\n..."    # Send a task
-ralph org wait  --seat reviewer                      # Wait for completion
-ralph org read  --seat reviewer                      # Read the latest message
-ralph org stop  --seat reviewer                      # Stop a seat
-ralph org disband                                    # Stop all seats
-ralph status                                         # List active seats
+# Spawn seats (--org-id, --id, --role, --driver, --model, --cwd are all required)
+# Default permission mode is "autonomous", which requires --scope (or --allow-unscoped to bypass)
+ralph org spawn --org-id demo --id reviewer --role reviewer --driver claude --model sonnet --cwd . --scope "review code changes"
+ralph org spawn --org-id demo --id verifier --role verifier --driver codex  --model gpt-5.5 --cwd . --scope "verify test results"
+
+# opencode: add it to driver_pool / model_pool in ralph.toml first; supports autonomous or guarded only
+# ralph org spawn --org-id demo --id tester --role tester --driver opencode --model <model> --cwd . --scope "run tests"
+
+# Send a task (--to = target seat id, --text = message body)
+ralph org send --org-id demo --to reviewer --text "TYPE: TASK
+TASK_ID: t-1
+SEAT: reviewer
+
+<task body>"
+
+ralph org wait  --org-id demo --seat reviewer   # Wait for completion
+ralph org read  --org-id demo --seat reviewer   # Read the latest message
+ralph org stop  --org-id demo --seat reviewer   # Stop a seat
+ralph org disband --org-id demo                 # Stop all seats
+ralph status                                    # List active seats
 ```
 
 ### `ralph.toml`  Org Configuration
