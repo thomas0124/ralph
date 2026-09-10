@@ -29,8 +29,7 @@ approval_policy = "on-request"
 web_search = "cached"
 
 [features]
-# Required: project-level [hooks] are only loaded when hooks is enabled.
-# Without this flag the [hooks] table below is silently ignored.
+# Required: project-level hooks are only loaded when hooks is enabled.
 hooks = true
 
 [tui]
@@ -38,50 +37,21 @@ hooks = true
 notifications = true
 
 # ---------------------------------------------------------------------------
-# Profiles — switch between flows with `codex --profile <name>`.
-# ---------------------------------------------------------------------------
-
-[profiles.work]
-# Standard /work-style implementation profile.
-model = "gpt-5.5"
-approval_policy = "on-request"
-
-[profiles.review]
-# Read-only review/advisory mode (used by the /cross-review skill).
-model = "gpt-5.5"
-sandbox_mode = "read-only"
-approval_policy = "never"
-
-# ---------------------------------------------------------------------------
-# Hooks — wired to the same scripts/ used by Claude Code's .claude/hooks/.
+# Hooks — wired via .codex/hooks.json (the source of truth for Codex hooks).
 #
 # IMPORTANT: hooks ONLY run when the project is trusted AND
 # [features] hooks = true (see above). `ralph doctor` verifies both.
 #
-# Keep Codex hooks in this file as inline `[[hooks.*]]` entries. Do not add a
-# sibling `.codex/hooks.json`; Codex warns when both representations exist in
-# the same project layer, and `ralph doctor` / `scripts/verify.local.sh`
-# reject that drift.
+# Codex hook entries live in .codex/hooks.json, NOT as inline [[hooks.*]]
+# tables here. Live-fire evidence (docs/evidence/codex-hooks-livefire-*.md)
+# showed that inline config.toml [[hooks.*]] entries do not fire, while
+# hooks.json entries do. Having both representations triggers a Codex warning
+# and `ralph doctor` / `scripts/verify.local.sh` reject the drift.
 #
-# Add or extend entries to mirror .claude/hooks/ behaviour.
-# ---------------------------------------------------------------------------
-
-# Default-on: detect U+FFFD mojibake injection after Edit/Write tool calls.
-# Reuses the same script the Claude-side hook calls (.claude/hooks/check_mojibake.sh)
-# so behaviour stays identical across agents. Path is a real file shipped by
-# `ralph init` — these entries satisfy `checkCodexEffectiveConfig`'s "at least
-# one [hooks.*] entry" requirement out of the box.
-[[hooks.PostToolUse]]
-match = { tool = "Edit" }
-command = ["./.claude/hooks/check_mojibake.sh"]
-
-[[hooks.PostToolUse]]
-match = { tool = "Write" }
-command = ["./.claude/hooks/check_mojibake.sh"]
-
 # Note: the scripts/*secret-guard.sh files are real git hooks, NOT Codex
-# PostToolUse hooks. `ralph init` / `ralph upgrade` install them into Git's hook
-# directory and chain pre-existing local hooks when needed.
+# PostToolUse hooks. `ralph init` / `ralph upgrade` install them into Git's
+# hook directory and chain pre-existing local hooks when needed.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # MCP servers — uncomment and supply credentials via environment variables.
