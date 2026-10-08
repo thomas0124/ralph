@@ -28,13 +28,13 @@ func newOrgCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "org",
-		Short: "Manage org-runtime seats (spawn, send, wait, read, stop, status, disband)",
+		Short: "Manage org-runtime seats (spawn, send, wait, read, stop, status, disband, purge)",
 		Long: "ralph org drives the org-runtime mechanism layer: spawning herdr/agmsg-backed\n" +
 			"seats within an org_id namespace, sending them messages, waiting on their\n" +
-			"state, reading their pane output, stopping them, showing roster status, and\n" +
-			"disbanding an entire org_id. Every verb records its outcome to an\n" +
-			"append-only manifest so `ralph org status` works even with herdr/agmsg\n" +
-			"absent or stopped.",
+			"state, reading their pane output, stopping them, showing roster status,\n" +
+			"disbanding an entire org_id, and purging a disbanded org's records. Every\n" +
+			"verb records its outcome to an append-only manifest so `ralph org status`\n" +
+			"works even with herdr/agmsg absent or stopped.",
 	}
 
 	cmd.PersistentFlags().StringVar(&orgID, "org-id", "", "org execution namespace (required)")
@@ -50,6 +50,7 @@ func newOrgCmd() *cobra.Command {
 		newOrgStopCmd(&orgID, &stateDir, &configPath),
 		newOrgStatusCmd(&orgID, &stateDir, &configPath),
 		newOrgDisbandCmd(&orgID, &stateDir, &configPath),
+		newOrgPurgeCmd(&orgID, &stateDir, &configPath),
 		newOrgReportCmd(&orgID, &stateDir, &configPath),
 		newOrgWatchCmd(&orgID, &stateDir, &configPath),
 	)
@@ -595,6 +596,45 @@ func newOrgDisbandCmd(orgID, stateDir, configPath *string) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "record without stopping real seats")
+
+	return cmd
+}
+
+func newOrgPurgeCmd(orgID, stateDir, configPath *string) *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "purge",
+		Short: "Permanently delete a disbanded org's records",
+		Long: "Purges --org-id's entire footprint from the state directory after " +
+			"verifying it is already disbanded (a real `disbanded` manifest " +
+			"event): every matching manifest event, model receipt, " +
+			"escalations.jsonl row, prompt file, and watch-status file. Pass " +
+			"--force to skip the disbanded check.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireOrgID(*orgID); err != nil {
+				return err
+			}
+			rt, err := newOrgRuntime(cmd, *stateDir, *configPath)
+			if err != nil {
+				return err
+			}
+			result := rt.Purge(org.PurgeParams{
+				OrgID: *orgID,
+				Force: force,
+			})
+			if result.Err != nil {
+				return result.Err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"purged org %q (%d manifest events, %d receipts removed)\n",
+				*orgID, result.EventsRemoved, result.ReceiptsRemoved)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false,
+		"skip the check that org is already disbanded")
 
 	return cmd
 }

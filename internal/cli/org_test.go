@@ -1889,3 +1889,108 @@ func TestOrgReport_CLI_RequiresOrgID(t *testing.T) {
 		t.Fatalf("expected non-zero exit for a missing --org-id, output: %s", out)
 	}
 }
+
+// --- ralph org purge (org deletion) --------------------------------------
+
+// spawnWorker is a tiny helper for purge tests that only need a real seat on
+// record (manifest events + one model receipt) before exercising purge.
+func spawnWorker(t *testing.T, stateDir string) {
+	t.Helper()
+	setupOrgStubPATH(t)
+	if _, err := runOrgCmd(t,
+		"spawn", "--org-id", "org-a", "--id", "seat-1", "--role", "worker",
+		"--driver", "claude", "--model", "sonnet", "--cwd", t.TempDir(),
+		"--scope", "test-scope",
+		"--state-dir", stateDir,
+	); err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+}
+
+// TestOrgPurge_CLI_NotDisbanded_NonZeroExit_ManifestUntouched covers purge's
+// gate at the CLI layer: an org that was spawned but never disbanded exits
+// non-zero, names the disband prerequisite, and leaves the manifest and
+// receipts completely untouched.
+func TestOrgPurge_CLI_NotDisbanded_NonZeroExit_ManifestUntouched(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	spawnWorker(t, stateDir)
+	eventsBefore := len(readManifestEvents(t, org.ManifestPathIn(stateDir)))
+
+	out, err := runOrgCmd(t, "purge", "--org-id", "org-a", "--state-dir", stateDir)
+	if err == nil {
+		t.Fatalf("expected non-zero exit purging an undisbanded org, output: %s", out)
+	}
+	if !strings.Contains(err.Error(), "not disbanded") {
+		t.Errorf("expected error to mention 'not disbanded', got: %v", err)
+	}
+
+	if got := len(readManifestEvents(t, org.ManifestPathIn(stateDir))); got != eventsBefore {
+		t.Errorf("expected manifest untouched by a rejected purge, %d -> %d events", eventsBefore, got)
+	}
+}
+
+// TestOrgPurge_CLI_DisbandedThenPurge_RemovesOrgAndStatusEmpty is the
+// documented lifecycle end to end: spawn -> disband -> purge exits zero,
+// reports both removal counts, and `status` afterwards shows no seats.
+func TestOrgPurge_CLI_DisbandedThenPurge_RemovesOrgAndStatusEmpty(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	spawnWorker(t, stateDir)
+
+	if _, err := runOrgCmd(t, "disband", "--org-id", "org-a", "--state-dir", stateDir); err != nil {
+		t.Fatalf("disband failed: %v", err)
+	}
+
+	out, err := runOrgCmd(t, "purge", "--org-id", "org-a", "--state-dir", stateDir)
+	if err != nil {
+		t.Fatalf("purge failed: %v (output: %s)", err, out)
+	}
+	if !strings.Contains(out, `purged org "org-a"`) ||
+		!strings.Contains(out, "manifest events") ||
+		!strings.Contains(out, "receipts removed") {
+		t.Errorf("expected purge confirmation with removal counts, got: %s", out)
+	}
+
+	if events := readManifestEvents(t, org.ManifestPathIn(stateDir)); len(events) != 0 {
+		t.Errorf("expected manifest empty after purge, got %+v", events)
+	}
+	if _, err := os.Stat(org.ReceiptsPathIn(stateDir)); !os.IsNotExist(err) {
+		t.Errorf("expected receipts file removed when it held only the purged org, stat err=%v", err)
+	}
+
+	statusOut, err := runOrgCmd(t, "status", "--org-id", "org-a", "--state-dir", stateDir)
+	if err != nil {
+		t.Fatalf("status after purge failed: %v", err)
+	}
+	if !strings.Contains(statusOut, "no seats") {
+		t.Errorf("expected status to report no seats after purge, got: %s", statusOut)
+	}
+}
+
+// TestOrgPurge_CLI_Force_WithoutDisband_Succeeds covers the --force
+// escape hatch at the CLI layer: skipping the disbanded gate still removes
+// the org's records.
+func TestOrgPurge_CLI_Force_WithoutDisband_Succeeds(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	spawnWorker(t, stateDir)
+
+	out, err := runOrgCmd(t, "purge", "--org-id", "org-a", "--state-dir", stateDir, "--force")
+	if err != nil {
+		t.Fatalf("expected --force purge to succeed, got %v (output: %s)", err, out)
+	}
+	if !strings.Contains(out, `purged org "org-a"`) {
+		t.Errorf("expected purge confirmation, got: %s", out)
+	}
+	if events := readManifestEvents(t, org.ManifestPathIn(stateDir)); len(events) != 0 {
+		t.Errorf("expected manifest empty after --force purge, got %+v", events)
+	}
+}
+
+func TestOrgPurge_CLI_RequiresOrgID(t *testing.T) {
+	out, err := runOrgCmd(t, "purge")
+	if err == nil {
+		t.Fatalf("expected non-zero exit for a missing --org-id, output: %s", out)
+	}
+	if !strings.Contains(err.Error(), "--org-id") {
+		t.Errorf("expected error to mention --org-id, got: %v", err)
+	}
+}

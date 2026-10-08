@@ -80,6 +80,7 @@ go install github.com/thomas0124/ralph/cmd/ralph@latest
 | `ralph upgrade` | Upgrade to the latest templates using a three-way merge |
 | `ralph doctor` | Upgrade to the latest templates using a three-way merge |
 | `ralph pack add <lang>` | Add a language pack |
+| `ralph pack rm <lang>` | Remove a language pack |
 | `ralph insights` | Aggregate and display pipeline execution data |
 | `ralph org <verb>` | Run the autonomous multi-seat org runtime |
 | `ralph status` | Show active seats |

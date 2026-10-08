@@ -327,3 +327,94 @@ func readJSONLines(path string, unmarshal func(line []byte) error) (corrupt int,
 	}
 	return corrupt, nil
 }
+
+// filterJSONLByOrgID removes every line in path whose decoded org_id equals
+// orgID, rewriting the file atomically (temp file + rename) when anything is
+// removed and deleting it entirely when no retained lines remain. Any line
+// that fails to unmarshal -- or whose org_id does not match -- is kept
+// byte-for-byte, so corrupt/foreign lines are never silently dropped or
+// re-encoded. Returns the number of removed lines. A missing file reads as
+// zero removals, not an error. Manifest, model-receipts, and escalation
+// stores all share this shape, so purge uses it for each.
+func filterJSONLByOrgID(path, orgID string) (int, error) {
+	f, openErr := os.Open(path)
+	if openErr != nil {
+		if errors.Is(openErr, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("org: open %s: %w", path, openErr)
+	}
+
+	var (
+		kept    [][]byte
+		removed int
+		probe   struct {
+			OrgID string `json:"org_id"`
+		}
+	)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if err := json.Unmarshal(line, &probe); err == nil && probe.OrgID == orgID {
+			removed++
+			continue
+		}
+		// scanner.Bytes() reuses its internal buffer, so each kept line must
+		// be copied before the next Scan() clobbers it.
+		kept = append(kept, append([]byte(nil), line...))
+	}
+	scanErr := scanner.Err()
+	// Close the input before Remove/Rename so platforms that refuse
+	// unlinking an open file (notably Windows) succeed.
+	if err := f.Close(); err != nil && scanErr == nil {
+		return 0, fmt.Errorf("org: close %s: %w", path, err)
+	}
+	if scanErr != nil {
+		return 0, fmt.Errorf("org: scan %s: %w", path, scanErr)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+
+	if len(kept) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return removed, fmt.Errorf("org: remove %s: %w", path, err)
+		}
+		return removed, nil
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ralph-filter-*")
+	if err != nil {
+		return 0, fmt.Errorf("org: create temp for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	done := false
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		if !done {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	for _, line := range kept {
+		if _, err := tmp.Write(append(line, '\n')); err != nil {
+			return 0, fmt.Errorf("org: write temp for %s: %w", path, err)
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		return 0, fmt.Errorf("org: sync temp for %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		closed = true
+		return 0, fmt.Errorf("org: close temp for %s: %w", path, err)
+	}
+	closed = true
+	if err := os.Rename(tmpName, path); err != nil {
+		return 0, fmt.Errorf("org: rename temp onto %s: %w", path, err)
+	}
+	done = true
+	return removed, nil
+}

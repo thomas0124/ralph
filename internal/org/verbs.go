@@ -3,6 +3,8 @@ package org
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/thomas0124/ralph/internal/org/protocol"
@@ -380,4 +382,125 @@ func (o *Org) Disband(p DisbandParams) DisbandResult {
 		result.Errs = append(result.Errs, err)
 	}
 	return result
+}
+
+// PurgeParams describes one `ralph org purge` invocation: permanently
+// deleting an org_id's entire footprint from the shared state directory.
+type PurgeParams struct {
+	OrgID string
+	// Force skips the disbanded-org gate (see Purge) that otherwise rejects
+	// purging an org with no real disbanded event on record.
+	Force bool
+}
+
+// PurgeResult is Purge's return value: how many manifest events and model
+// receipts this org_id contributed (removed), plus any fatal error.
+type PurgeResult struct {
+	Err             error
+	EventsRemoved   int
+	ReceiptsRemoved int
+}
+
+// Purge permanently deletes p.OrgID's footprint from the shared state
+// directory: every manifest event (including the org-level disbanded event
+// and any dry-run events) and every model receipt whose org_id matches, the
+// org's rows in the shared escalations.jsonl, its prompt files under
+// <state-dir>/prompts/ (<org_id>_*.md), and its watch-status file. The
+// JSONL stores are rewritten atomically (temp + rename) with everything that
+// cannot be attributed to the org preserved byte-for-byte.
+//
+// Gate: unless p.Force is set, Purge refuses to touch an org whose manifest
+// has no real (non-dry-run) `disbanded` event on record -- matching `ralph
+// org disband`, which always appends one, so the documented "disband first,
+// then purge" flow is the natural predecessor. A disbanded org that was
+// re-spawned afterwards (an active seat appearing after the disbanded
+// event) is tampering with the gate rather than a supported state; pass
+// --force to purge in that case.
+//
+// Concurrency: the whole read/rewrite runs under withManifestLock (the same
+// flock `ralph org spawn` holds for its read-validate-append window), so a
+// concurrent spawn cannot interleave a mid-rewrite append into the old
+// file. Appenders that do not take the lock (send/stop/disband event
+// records) racing a purge on the *same* org are operating on an org that is
+// being deleted -- a user error; events for *other* org_ids that were read
+// before the sweep appear in the rewritten file, and the sweep itself only
+// ever removes lines the lock holder observed.
+func (o *Org) Purge(p PurgeParams) PurgeResult {
+	stateDir := filepath.Dir(o.Manifest.Path())
+	var result PurgeResult
+
+	err := withManifestLock(stateDir, func() error {
+		// Disbanded gate runs under the same lock as the rewrite so a
+		// concurrent writer cannot clear the evidence between check and
+		// delete (TOCTOU). --force skips the gate.
+		if !p.Force {
+			ok, err := o.hasRealDisbandedEvent(p.OrgID)
+			if err != nil {
+				return fmt.Errorf("org: purge: %w", err)
+			}
+			if !ok {
+				return fmt.Errorf(
+					"org: purge: org %q is not disbanded (run `ralph org disband` first, or pass --force)", p.OrgID)
+			}
+		}
+
+		events, err := filterJSONLByOrgID(o.Manifest.Path(), p.OrgID)
+		result.EventsRemoved = events
+		if err != nil {
+			return err
+		}
+
+		receipts, err := filterJSONLByOrgID(o.Receipts.Path(), p.OrgID)
+		result.ReceiptsRemoved = receipts
+		if err != nil {
+			return err
+		}
+
+		// Escalations.jsonl is shared across orgs, so only its org_id rows go.
+		if _, err := filterJSONLByOrgID(filepath.Join(stateDir, EscalationsRelName), p.OrgID); err != nil {
+			return err
+		}
+
+		// Prompt files are namespaced per seat as <org_id>_<seat_id>.md;
+		// orgID is validated to be path-safe by every production caller
+		// (requireOrgID/ValidateIdentifier), so this glob cannot escape the
+		// prompts directory.
+		matches, err := filepath.Glob(filepath.Join(stateDir, "prompts", p.OrgID+"_*.md"))
+		if err != nil {
+			return err
+		}
+		for _, m := range matches {
+			if err := os.Remove(m); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+
+		if err := os.Remove(filepath.Join(stateDir, WatchStatusFileName(p.OrgID))); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
+	result.Err = err
+	return result
+}
+
+// hasRealDisbandedEvent reports whether orgID's manifest contains a real
+// (non-dry-run) org-level `disbanded` event -- the evidence Purge's
+// disbanded gate (`--force` skips it) checks for. A dry-run
+// `disband --dry-run` event deliberately does not count: it only ever
+// deactivated dry-run seat entries, so it cannot evidence a real org
+// teardown. A manifest read error is returned as-is so callers can
+// distinguish I/O failure from a genuine "not disbanded" refusal (fail
+// closed on delete still holds: Purge does not proceed when this errors).
+func (o *Org) hasRealDisbandedEvent(orgID string) (bool, error) {
+	rr, err := o.Manifest.Read()
+	if err != nil {
+		return false, err
+	}
+	for _, ev := range rr.Events {
+		if ev.OrgID == orgID && ev.SeatID == "" && ev.Event == EventDisbanded && !ev.DryRun {
+			return true, nil
+		}
+	}
+	return false, nil
 }
